@@ -1,0 +1,13 @@
+# Build artifacts
+/build/
+/CMakeUserPresets.json
+
+# Conan
+/conan.lock
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+.cache/
+compile_commands.json

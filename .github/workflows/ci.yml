@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build & run (gcc-16, C++26, -freflection)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build dev image (gcc-16 + Conan 2)
+        uses: docker/build-push-action@v6
+        with:
+          context: docker
+          file: docker/Dockerfile
+          tags: sml-cpp26-dev:latest
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Start build container
+        run: |
+          docker run -d --name sml-cpp26-build \
+            -v "${{ github.workspace }}:/work" -w /work \
+            sml-cpp26-dev:latest sleep infinity
+
+      - name: Conan install
+        run: docker exec sml-cpp26-build conan install . -pr=gcc16 --build=missing
+
+      - name: CMake configure
+        run: docker exec sml-cpp26-build cmake --preset conan-release
+
+      - name: CMake build
+        run: docker exec sml-cpp26-build cmake --build build/Release -j
+
+      - name: Run side_by_side example
+        run: docker exec sml-cpp26-build ./build/Release/side_by_side
+
+      - name: Exhaustiveness demo — must fail without BUG_FIXED
+        run: |
+          set +e
+          docker exec sml-cpp26-build bash -c '
+            cmake -DBUG_FIXED=OFF -B build/Release >/dev/null
+            ninja -C build/Release -t clean exhaustiveness_demo >/dev/null 2>&1 || true
+            cmake --build build/Release --target exhaustiveness_demo 2>&1
+          '
+          rc=$?
+          if [ $rc -eq 0 ]; then
+            echo "::error::exhaustiveness_demo compiled with BUG_FIXED=OFF — static_assert did not fire"
+            exit 1
+          fi
+          echo "Compilation failed as expected."
+
+      - name: Exhaustiveness demo — must build & run with BUG_FIXED
+        run: |
+          docker exec sml-cpp26-build bash -c '
+            cmake -DBUG_FIXED=ON -B build/Release >/dev/null
+            ninja -C build/Release -t clean exhaustiveness_demo >/dev/null 2>&1 || true
+            cmake --build build/Release --target exhaustiveness_demo
+            ./build/Release/exhaustiveness_demo
+          '
+
+      - name: Stop build container
+        if: always()
+        run: docker rm -f sml-cpp26-build || true

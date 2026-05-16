@@ -1,0 +1,5 @@
+# Adds gcc-16 to Conan 2.x's known settings. Merged with the built-in
+# settings.yml at config-time. See https://docs.conan.io/2/reference/config_files/settings.html
+compiler:
+  gcc:
+    version: ["16", "16.1"]

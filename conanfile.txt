@@ -1,0 +1,9 @@
+[requires]
+sml/1.1.13
+
+[generators]
+CMakeDeps
+CMakeToolchain
+
+[layout]
+cmake_layout
