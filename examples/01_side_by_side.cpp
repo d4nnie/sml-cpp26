@@ -18,11 +18,17 @@ struct timeout {};
 
 struct disconnect {};
 
+struct error {};
+
+struct recover {};
+
 constexpr auto host_is_valid = [](connect const& event) { return !event.host.empty(); };
 constexpr auto log_dial = [](connect const& event) { std::println("    dial {}", event.host); };
 constexpr auto tickle = [] { std::println("    tickle"); };
 constexpr auto backoff = [] { std::println("    backoff"); };
 constexpr auto close = [] { std::println("    close"); };
+constexpr auto degrade = [] { std::println("    degrade"); };
+constexpr auto heal = [] { std::println("    heal"); };
 
 bool network_is_up() {
     return true;
@@ -30,6 +36,16 @@ bool network_is_up() {
 
 namespace classic {
 namespace sml = boost::sml;
+
+struct session_fsm {
+    auto operator()() const {
+        using namespace sml;
+        return make_transition_table(
+            *"live"_s + event<error> / degrade = "degraded"_s,
+            "degraded"_s + event<recover> / heal = "live"_s
+        );
+    }
+};
 
 struct fsm {
     void log_handshake(established const&) const {
@@ -43,10 +59,10 @@ struct fsm {
         using namespace sml;
         return make_transition_table(
             *"idle"_s + event<connect>[host_is_valid] / log_dial = "connecting"_s,
-            "connecting"_s + event<established>[net_up] / &fsm::log_handshake = "connected"_s,
-            "connected"_s + event<ping> / tickle = "connected"_s,
-            "connected"_s + event<timeout> / backoff = "connecting"_s,
-            "connected"_s + event<disconnect> / close = "disconnected"_s
+            "connecting"_s + event<established>[net_up] / &fsm::log_handshake = state<session_fsm>,
+            state<session_fsm> + event<ping> / tickle = state<session_fsm>,
+            state<session_fsm> + event<timeout> / backoff = "connecting"_s,
+            state<session_fsm> + event<disconnect> / close = "disconnected"_s
         );
     }
 };
@@ -60,9 +76,38 @@ enum class state {
     disconnected,
 };
 
+enum class session_state {
+    live,
+    degraded,
+};
+
+struct session_fsm {
+    using state_type = session_state;
+    static constexpr auto initial_state = session_state::live;
+
+    // clang-format off
+    [[= reflect_sml::transition{session_state::live, session_state::degraded}]]
+    [[= reflect_sml::action{degrade}]]
+    void on_error(error const&) {}
+
+    [[= reflect_sml::transition{session_state::degraded, session_state::live}]]
+    [[= reflect_sml::action{heal}]]
+    void on_recover(recover const&) {}
+
+    // clang-format on
+};
+
+static_assert(reflect_sml::is_exhaustive<session_fsm>());
+
 struct fsm {
     using state_type = state;
     static constexpr auto initial_state = state::idle;
+
+    // Nested machine — when outer is in `connected`, events route here first.
+    // clang-format off
+    [[= reflect_sml::nested{state::connected}]]
+    reflect_sml::machine<session_fsm> session;
+    // clang-format on
 
     // PMF — the niche third callable form.
     void log_handshake(established const&) const {
@@ -112,8 +157,10 @@ int main() {
     auto classic_machine = boost::sml::sm<classic::fsm>{classic_fsm};
     classic_machine.process_event(connect{""}); // guard blocks — no dial
     classic_machine.process_event(connect{"example.com"});
-    classic_machine.process_event(established{});
-    classic_machine.process_event(ping{});
+    classic_machine.process_event(established{}); // -> connected / session=live
+    classic_machine.process_event(error{}); // nested: live -> degraded
+    classic_machine.process_event(ping{}); // outer self-loop, tickle
+    classic_machine.process_event(recover{}); // nested: degraded -> live
     classic_machine.process_event(timeout{});
     classic_machine.process_event(established{});
     classic_machine.process_event(disconnect{});
@@ -130,8 +177,10 @@ int main() {
     reflective_machine.dispatch(connect{""}); // guard blocks — no dial
     std::println("  after empty connect: {}", reflective_machine.current_name());
     reflective_machine.dispatch(connect{"example.com"});
-    reflective_machine.dispatch(established{});
-    reflective_machine.dispatch(ping{});
+    reflective_machine.dispatch(established{}); // -> connected / session=live
+    reflective_machine.dispatch(error{}); // nested: live -> degraded
+    reflective_machine.dispatch(ping{}); // outer self-loop, tickle
+    reflective_machine.dispatch(recover{}); // nested: degraded -> live
     reflective_machine.dispatch(timeout{});
     reflective_machine.dispatch(established{});
     reflective_machine.dispatch(disconnect{});

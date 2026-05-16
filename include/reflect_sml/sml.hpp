@@ -34,6 +34,14 @@ struct action {
 template<typename Callable>
 action(Callable) -> action<Callable>;
 
+template<typename State>
+struct nested {
+    State at;
+};
+
+template<typename State>
+nested(State) -> nested<State>;
+
 namespace detail {
 consteval bool is_named(std::meta::info member, std::string_view name) {
     return std::meta::has_identifier(member) && std::meta::identifier_of(member) == name;
@@ -44,7 +52,8 @@ constexpr std::string_view state_name(State value) noexcept {
     static constexpr auto enums = std::define_static_array(std::meta::enumerators_of(^^State));
     auto out = std::string_view{};
     template for (constexpr auto i: enums) {
-        if (value == std::meta::extract<State>(i)) out = std::meta::identifier_of(i);
+        if (value == std::meta::extract<State>(i))
+            out = std::meta::identifier_of(i);
     }
     return out;
 }
@@ -55,9 +64,12 @@ constexpr std::string_view state_name_of(typename StateMachine::state_type value
 }
 
 consteval bool is_transition_member(std::meta::info member) {
-    if (!std::meta::is_function(member)) return false;
-    if (std::meta::is_static_member(member)) return false;
-    if (!std::meta::has_identifier(member)) return false;
+    if (!std::meta::is_function(member))
+        return false;
+    if (std::meta::is_static_member(member))
+        return false;
+    if (!std::meta::has_identifier(member))
+        return false;
     return true;
 }
 
@@ -82,7 +94,8 @@ constexpr bool run_guards(Self& self, Event const& event) {
             std::meta::has_template_arguments(annotation_type) && std::meta::template_of(annotation_type) == ^^guard
         ) {
             constexpr auto value = std::meta::extract<typename[:annotation_type:]>(annotation);
-            if (ok && !invoke_callable(value.callable, self, event)) ok = false;
+            if (ok && !invoke_callable(value.callable, self, event))
+                ok = false;
         }
     }
     return ok;
@@ -127,7 +140,8 @@ consteval bool any_transition_touches(State value) {
     static constexpr auto context = std::meta::access_context::current();
     template for (constexpr auto j: std::define_static_array(std::meta::members_of(^^StateMachine, context))) {
         if constexpr (is_transition_member(j)) {
-            if (transition_touches<j>(value)) mentioned = true;
+            if (transition_touches<j>(value))
+                mentioned = true;
         }
     }
     return mentioned;
@@ -166,12 +180,34 @@ template<std::meta::info Member, typename StateMachine, typename Event>
 constexpr bool try_fire(StateMachine& impl, typename StateMachine::state_type& current, Event const& event) {
     using State = typename StateMachine::state_type;
     constexpr auto edge = transition_of<Member, State>();
-    if (current != edge.from) return false;
-    if (!run_guards<Member>(impl, event)) return false;
+    if (current != edge.from)
+        return false;
+    if (!run_guards<Member>(impl, event))
+        return false;
     run_actions<Member>(impl, event);
     (impl.[:Member:])(event);
     current = edge.to;
     return true;
+}
+
+template<typename StateMachine, typename Event>
+constexpr bool try_nested_dispatch(StateMachine& impl, typename StateMachine::state_type current, Event const& event) {
+    using State = typename StateMachine::state_type;
+    auto handled = false;
+    static constexpr auto context = std::meta::access_context::current();
+    template for (constexpr auto m:
+                  std::define_static_array(std::meta::nonstatic_data_members_of(^^StateMachine, context))) {
+        static constexpr auto annotations =
+            std::define_static_array(std::meta::annotations_of_with_type(m, ^^nested<State>));
+        if constexpr (annotations.size() == 1) {
+            constexpr auto link = std::meta::extract<nested<State>>(annotations[0]);
+            if (!handled && current == link.at) {
+                if (impl.[:m:].dispatch(event))
+                    handled = true;
+            }
+        }
+    }
+    return handled;
 }
 } // namespace detail
 
@@ -183,7 +219,8 @@ consteval bool is_exhaustive() {
     auto ok = true;
     template for (constexpr auto i: enums) {
         constexpr auto value = std::meta::extract<State>(i);
-        if (value != StateMachine::initial_state && !detail::any_transition_touches<StateMachine>(value)) ok = false;
+        if (value != StateMachine::initial_state && !detail::any_transition_touches<StateMachine>(value))
+            ok = false;
     }
     return ok;
 }
@@ -212,11 +249,14 @@ public:
 
     template<typename Event>
     constexpr bool dispatch(Event const& event) {
+        if (detail::try_nested_dispatch(implementation_, current_, event))
+            return true;
         auto fired = false;
         static constexpr auto context = std::meta::access_context::current();
         template for (constexpr auto i: std::define_static_array(std::meta::members_of(^^StateMachine, context))) {
             if constexpr (detail::is_handler_for<i, state_type, Event>()) {
-                if (!fired && detail::try_fire<i>(implementation_, current_, event)) fired = true;
+                if (!fired && detail::try_fire<i>(implementation_, current_, event))
+                    fired = true;
             }
         }
         return fired;
